@@ -4,7 +4,7 @@
 
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from typing import Optional
+from typing import Optional, Union, List
 
 
 class Preprocessor(BaseEstimator, TransformerMixin):
@@ -12,16 +12,70 @@ class Preprocessor(BaseEstimator, TransformerMixin):
     Предобработка данных: удаление признаков, выбросов, импутация пропусков.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        drop_cols: Optional[List[str]] = None,
+        age_threshold: int = 100,
+        emp_length_threshold: int = 50,
+    ):
+        """
+        Инициализирует препроцессор с заданными параметрами.
+
+        Args:
+            drop_cols: Список названий колонок для удаления.
+                       Если None, используются колонки по умолчанию.
+            age_threshold: Максимально допустимый возраст (в годах).
+            emp_length_threshold: Максимально допустимый стаж работы (в годах).
+        """
+        self.drop_cols = drop_cols or [
+            "client_ID",
+            "loan_to_income_ratio",
+            "city_latitude",
+            "city_longitude",
+            "state",
+            "country",
+        ]
+        self.age_threshold = age_threshold
+        self.emp_length_threshold = emp_length_threshold
         self.params = {}
+
+    def _drop_columns(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Удаляет заданные колонки из DataFrame.
+
+        Args:
+            X: Исходный DataFrame.
+
+        Returns:
+            DataFrame без удалённых колонок.
+            Если колонка отсутствует, ошибка игнорируется.
+        """
+        return X.drop(columns=self.drop_cols, errors="ignore")
+
+    def _filter_outliers(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Фильтрует строки по возрасту и стажу, удаляя выбросы.
+
+        Args:
+            X: DataFrame с колонками 'person_age' и 'person_emp_length'.
+
+        Returns:
+            Отфильтрованный DataFrame (копия).
+            Оставляются строки, где возраст <= age_threshold,
+            а стаж либо <= emp_length_threshold, либо отсутствует (NaN).
+        """
+        mask = (X["person_age"] <= self.age_threshold) & (
+            (X["person_emp_length"] <= self.emp_length_threshold) | X["person_emp_length"].isna()
+        )
+        return X.loc[mask].copy()
 
     def fit(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> "Preprocessor":
         """
-        Вычисляет параметры импутации на основе данных.
+        Вычисляет параметры импутации на основе обучающих данных.
 
         Args:
             X: pandas DataFrame с исходными данными.
-            y: не используется.
+            y: не используется, оставлен для совместимости.
 
         Returns:
             self
@@ -30,70 +84,65 @@ class Preprocessor(BaseEstimator, TransformerMixin):
             ValueError: если отсутствует одна из обязательных колонок.
         """
         data = X.copy()
-
-        data.drop(columns=["client_ID"], inplace=True)
-        data.drop(columns=["loan_to_income_ratio"], inplace=True)
-        data.drop(columns=["city_latitude", "city_longitude", "state", "country"], inplace=True)
-
-        data = data[data["person_age"] <= 100].copy()
-        data = data[(data["person_emp_length"] <= 50) | data["person_emp_length"].isna()].copy()
+        data = self._drop_columns(data)
+        data = self._filter_outliers(data)
 
         self.params["rate_medians"] = data.groupby("loan_grade")["loan_int_rate"].median().to_dict()
+        self.params["global_rate_median"] = float(data["loan_int_rate"].median())
         self.params["emp_median"] = float(data["person_emp_length"].median())
 
         return self
 
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> Union[pd.DataFrame, tuple]:
         """
         Применяет предобработку к данным.
 
         Args:
             X: pandas DataFrame с исходными данными.
+            y: опционально, целевая переменная. Если передана, возвращается синхронизированная
+                версия y (только для строк, оставшихся после удаления выбросов).
 
         Returns:
-            pandas DataFrame с предобработанными данными.
+            Если y не передан: pd.DataFrame с предобработанными данными.
+            Если y передан: кортеж (pd.DataFrame, pd.Series) — предобработанные X и синхронизированный y.
 
         Raises:
             ValueError: если не были вызваны fit перед transform.
         """
+        if not self.params:
+            raise ValueError("Модель не обучена. Вызовите fit перед transform.")
+
         data = X.copy()
+        data = self._drop_columns(data)
+        data = self._filter_outliers(data)
 
-        data.drop(columns=["client_ID"], inplace=True)
-        data.drop(columns=["loan_to_income_ratio"], inplace=True)
-        data.drop(columns=["city_latitude", "city_longitude", "state", "country"], inplace=True)
+        rate_medians = self.params["rate_medians"]
+        global_rate_median = self.params["global_rate_median"]
+        data["loan_int_rate"] = data["loan_int_rate"].fillna(
+            data["loan_grade"].map(rate_medians).fillna(global_rate_median)
+        )
 
-        data = data[data["person_age"] <= 100].copy()
-        data = data[(data["person_emp_length"] <= 50) | data["person_emp_length"].isna()].copy()
-
-        rate_medians = self.params.get("rate_medians")
-        if rate_medians is None:
-            raise ValueError("Параметры импутации не найдены. Вызовите fit перед transform.")
-
-        def fill_rate(row: pd.Series) -> float:
-            if pd.isna(row["loan_int_rate"]):
-                return rate_medians[row["loan_grade"]]
-            return row["loan_int_rate"]
-
-        data["loan_int_rate"] = data.apply(fill_rate, axis=1)
-
-        emp_median = self.params.get("emp_median")
-        if emp_median is None:
-            raise ValueError("Параметр emp_median не найден. Вызовите fit перед transform.")
-
+        emp_median = self.params["emp_median"]
         data["emp_length_missing"] = data["person_emp_length"].isna().astype(int)
         data["person_emp_length"] = data["person_emp_length"].fillna(emp_median)
 
+        if y is not None:
+            y_sync = y.loc[data.index]
+            return data, y_sync
         return data
 
-    def fit_transform(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> pd.DataFrame:
+    def fit_transform(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> Union[pd.DataFrame, tuple]:
         """
-        Сочетание fit и transform.
+        Сочетание fit и transform с синхронизацией y.
 
         Args:
             X: pandas DataFrame с исходными данными.
-            y: не используется.
+            y: опционально, целевая переменная. Если передана, возвращается синхронизированная
+                версия y (только для строк, оставшихся после удаления выбросов).
 
         Returns:
-            pandas DataFrame с предобработанными данными.
+            Если y не передан: pd.DataFrame с предобработанными данными.
+            Если y передан: кортеж (pd.DataFrame, pd.Series) — предобработанные X и синхронизированный y.
         """
-        return self.fit(X, y).transform(X)
+        self.fit(X, y)
+        return self.transform(X, y)
