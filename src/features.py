@@ -3,8 +3,9 @@
 """
 
 import pandas as pd
+import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 
 class FeatureEngineer(BaseEstimator, TransformerMixin):
@@ -16,70 +17,36 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             Если False, слабые признаки не создаются.
             Слабые признаки: dti_loan_pct_ratio, rate_grade_deviation,
             city_avg_dti, city_avg_loan_pct.
-            Остальные новые признаки (бинарные флаги, комбинации категорий)
-            создаются всегда.
+            Остальные новые признаки создаются всегда.
+
+    Attributes:
+        include_weak (bool): Флаг включения слабых признаков.
+        params (dict): Параметры, вычисленные в fit.
+        feature_names_in_ (List[str]): Имена колонок входных данных.
+        _feature_names_out (List[str]): Имена колонок после трансформации.
     """
 
     def __init__(self, include_weak: bool = False):
-        """
-        Инициализирует FeatureEngineer.
-
-        Args:
-            include_weak: Флаг включения слабых признаков.
-        """
         self.include_weak = include_weak
         self.params = {}
+        self.feature_names_in_ = None
+        self._feature_names_out = None
 
-    def _compute_thresholds(self, data: pd.DataFrame) -> None:
-        """
-        Вычисляет пороговые значения и средние по группам для создания признаков.
+    def _ensure_dataframe(self, X: Union[pd.DataFrame, np.ndarray]) -> pd.DataFrame:
+        """Преобразует входные данные в pandas DataFrame, если необходимо."""
+        if isinstance(X, pd.DataFrame):
+            return X.copy()
+        if isinstance(X, np.ndarray):
+            if self.feature_names_in_ is None:
+                raise ValueError(
+                    "Transformer not fitted yet. Cannot convert numpy array to DataFrame."
+                )
+            return pd.DataFrame(X, columns=self.feature_names_in_)
+        raise TypeError(f"Expected pandas DataFrame or numpy array, got {type(X)}")
 
-        Args:
-            data: DataFrame с исходными признаками.
-        """
-        self.params["threshold_debt"] = data["debt_to_income_ratio"].quantile(0.75)
-        self.params["threshold_loan_pct"] = data["loan_percent_income"].quantile(0.75)
-        self.params["threshold_rate"] = data["loan_int_rate"].quantile(0.75)
-
-        self.params["city_avg_dti"] = data.groupby("city")["debt_to_income_ratio"].mean().to_dict()
-        self.params["city_avg_loan_pct"] = data.groupby("city")["loan_percent_income"].mean().to_dict()
-        self.params["avg_rate_by_grade"] = data.groupby("loan_grade")["loan_int_rate"].mean().to_dict()
-
-    def fit(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> "FeatureEngineer":
-        """
-        Вычисляет параметры для создания новых признаков.
-
-        Args:
-            X: pandas DataFrame с очищенными данными.
-            y: не используется, оставлен для совместимости.
-
-        Returns:
-            self
-        """
-        data = X.copy()
-        self._compute_thresholds(data)
-        return self
-
-    def transform(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> Union[pd.DataFrame, tuple]:
-        """
-        Применяет создание новых признаков к данным.
-
-        Args:
-            X: pandas DataFrame с очищенными данными.
-            y: опционально, целевая переменная. Если передана, возвращается синхронизированная
-                версия y (только для строк, оставшихся после удаления выбросов).
-
-        Returns:
-            Если y не передан: pd.DataFrame с добавленными новыми признаками.
-            Если y передан: кортеж (pd.DataFrame, pd.Series) — X с новыми признаками и синхронизированный y.
-
-        Raises:
-            ValueError: если не были вызваны fit перед transform.
-        """
-        if not self.params:
-            raise ValueError("Модель не обучена. Вызовите fit перед transform.")
-
-        data = X.copy()
+    def _apply_transformations(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Применяет все преобразования к DataFrame (без проверок)."""
+        data = data.copy()
 
         data["dti_loan_pct_ratio"] = data["debt_to_income_ratio"] / (data["loan_percent_income"] + 0.001)
         data["income_debt_balance"] = data["person_income"] - data["other_debt"]
@@ -103,27 +70,99 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                 "dti_loan_pct_ratio",
                 "rate_grade_deviation",
                 "city_avg_dti",
-                "city_avg_loan_pct"
+                "city_avg_loan_pct",
             ]
             data.drop(columns=weak_cols, inplace=True, errors="ignore")
 
-        if y is not None:
-            y_sync = y.loc[data.index]
-            return data, y_sync
         return data
 
-    def fit_transform(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> Union[pd.DataFrame, tuple]:
+    def fit(self, X: Union[pd.DataFrame, np.ndarray], y: Optional[pd.Series] = None) -> "FeatureEngineer":
         """
-        Сочетание fit и transform с синхронизацией y.
+        Вычисляет параметры для создания новых признаков и сохраняет имена выходных колонок.
 
         Args:
-            X: pandas DataFrame с очищенными данными.
-            y: опционально, целевая переменная. Если передана, возвращается синхронизированная
-                версия y (только для строк, оставшихся после удаления выбросов).
+            X: pandas DataFrame или numpy array с очищенными данными.
+            y: не используется, оставлен для совместимости.
 
         Returns:
-            Если y не передан: pd.DataFrame с добавленными новыми признаками.
-            Если y передан: кортеж (pd.DataFrame, pd.Series) — X с новыми признаками и синхронизированный y.
+            self
+        """
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = X.columns.tolist()
+        elif isinstance(X, np.ndarray):
+            if self.feature_names_in_ is None:
+                raise ValueError("Feature names not provided. Please pass a DataFrame for fitting.")
+        else:
+            raise TypeError(f"Expected pandas DataFrame or numpy array, got {type(X)}")
+
+        data = self._ensure_dataframe(X)
+
+        self.params["threshold_debt"] = data["debt_to_income_ratio"].quantile(0.75)
+        self.params["threshold_loan_pct"] = data["loan_percent_income"].quantile(0.75)
+        self.params["threshold_rate"] = data["loan_int_rate"].quantile(0.75)
+
+        self.params["city_avg_dti"] = data.groupby("city")["debt_to_income_ratio"].mean().to_dict()
+        self.params["city_avg_loan_pct"] = data.groupby("city")["loan_percent_income"].mean().to_dict()
+        self.params["avg_rate_by_grade"] = data.groupby("loan_grade")["loan_int_rate"].mean().to_dict()
+
+        dummy = pd.DataFrame(columns=self.feature_names_in_).fillna(0)
+        transformed = self._apply_transformations(dummy)
+        self._feature_names_out = transformed.columns.tolist()
+
+        return self
+
+    def transform(self, X: Union[pd.DataFrame, np.ndarray]) -> pd.DataFrame:
+        """
+        Применяет создание новых признаков к данным.
+
+        Args:
+            X: pandas DataFrame или numpy array с очищенными данными.
+
+        Returns:
+            pandas DataFrame с добавленными новыми признаками.
+
+        Raises:
+            ValueError: если не были вызваны fit перед transform.
+        """
+        if not self.params:
+            raise ValueError("Transformer not fitted. Call fit() before transform().")
+
+        data = self._ensure_dataframe(X)
+        return self._apply_transformations(data)
+
+    def fit_transform(
+        self, X: Union[pd.DataFrame, np.ndarray], y: Optional[pd.Series] = None
+    ) -> pd.DataFrame:
+        """
+        Сочетание fit и transform.
+
+        Args:
+            X: pandas DataFrame или numpy array с очищенными данными.
+            y: не используется, оставлен для совместимости.
+
+        Returns:
+            pandas DataFrame с добавленными новыми признаками.
         """
         self.fit(X, y)
-        return self.transform(X, y)
+        return self.transform(X)
+
+    def get_feature_names_out(self, input_features=None) -> List[str]:
+        """
+        Возвращает имена колонок после трансформации.
+
+        Args:
+            input_features: игнорируется, используется для совместимости.
+
+        Returns:
+            Список имён колонок выходного DataFrame.
+
+        Raises:
+            ValueError: если трансформер не обучен.
+        """
+        if self._feature_names_out is None:
+            raise ValueError("Transformer not fitted. Call fit() first.")
+        return self._feature_names_out
+
+    def __sklearn_is_fitted__(self) -> bool:
+        """Проверяет, обучен ли трансформер."""
+        return hasattr(self, "params") and bool(self.params)
