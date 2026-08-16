@@ -6,6 +6,9 @@ __pycache__/
 # Datasets
 datasets/
 
+# Models
+models/
+
 # Virtual Environment
 .venv/
 venv/
