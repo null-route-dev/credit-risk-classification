@@ -1,5 +1,5 @@
 """
-Главный модуль управления проектом: обучение и предсказание через CLI.
+Главный модуль управления проектом: обучение, предсказание и API через CLI.
 """
 
 import argparse
@@ -7,6 +7,7 @@ import logging
 import sys
 
 import pandas as pd
+import uvicorn
 
 from src.data_loader import DataLoader
 from src.train import LightGBMTrainer
@@ -47,7 +48,6 @@ def train_command(args: argparse.Namespace) -> None:
         cv_folds=args.cv_folds,
         include_weak=args.include_weak,
         use_optuna=args.use_optuna,
-        default_params=None,
     )
 
     logger.info("Запуск обучения...")
@@ -85,9 +85,21 @@ def predict_command(args: argparse.Namespace) -> None:
         print(out_df.head(10).to_string())
 
 
+def api_command(args: argparse.Namespace) -> None:
+    """Запускает FastAPI сервер."""
+    logger.info(f"Запуск API сервера на {args.host}:{args.port}")
+    uvicorn.run(
+        "src.api.main:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        log_level=args.log_level,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Управление обучением и предсказанием кредитного скоринга."
+        description="Управление обучением, предсказанием и API кредитного скоринга."
     )
     parser.add_argument("--verbose", action="store_true", help="Подробное логирование")
 
@@ -161,6 +173,29 @@ def main() -> None:
         help="Выводить вероятности вместо бинарных классов"
     )
     predict_parser.set_defaults(func=predict_command)
+
+    api_parser = subparsers.add_parser(
+        "api",
+        help="Запуск FastAPI сервера"
+    )
+    api_parser.add_argument(
+        "--host", type=str, default="127.0.0.1",
+        help="Хост для сервера (по умолчанию: 127.0.0.1)"
+    )
+    api_parser.add_argument(
+        "--port", type=int, default=8000,
+        help="Порт для сервера (по умолчанию: 8000)"
+    )
+    api_parser.add_argument(
+        "--reload", action="store_true",
+        help="Автоматическая перезагрузка при изменениях"
+    )
+    api_parser.add_argument(
+        "--log-level", type=str, default="info",
+        choices=["critical", "error", "warning", "info", "debug"],
+        help="Уровень логирования (по умолчанию: info)"
+    )
+    api_parser.set_defaults(func=api_command)
 
     args = parser.parse_args()
 
