@@ -9,6 +9,12 @@ import sys
 import pandas as pd
 import uvicorn
 
+from src.config import (
+    DATA_PATH, KAGGLE_DATASET, MODEL_DIR, TARGET_COLUMN,
+    TEST_SIZE, RANDOM_STATE, CV_FOLDS, N_TRIALS,
+    INCLUDE_WEAK, USE_OPTUNA, API_HOST, API_PORT,
+    API_RELOAD, API_LOG_LEVEL, LOG_LEVEL, LOG_FORMAT, LOG_DATE_FORMAT
+)
 from src.data_loader import DataLoader
 from src.train import LightGBMTrainer
 from src.predict import LightGBMPredictor
@@ -16,23 +22,23 @@ from src.predict import LightGBMPredictor
 logger = logging.getLogger(__name__)
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    level=getattr(logging, LOG_LEVEL),
+    format=LOG_FORMAT,
+    datefmt=LOG_DATE_FORMAT,
 )
 
 
 def load_data(args: argparse.Namespace) -> pd.DataFrame:
-    """
-    Загружает данные из CSV или Kaggle согласно аргументам.
-    """
+    """Загружает данные из CSV или Kaggle согласно аргументам."""
+    data_path = args.data if hasattr(args, 'data') and args.data else DATA_PATH
+    
     if args.kaggle:
         return DataLoader.load(
-            filepath=args.data,
+            filepath=data_path,
             kaggle_dataset=args.kaggle,
             force=args.force_kaggle,
         )
-    return DataLoader.load(filepath=args.data)
+    return DataLoader.load(filepath=data_path)
 
 
 def train_command(args: argparse.Namespace) -> None:
@@ -42,19 +48,19 @@ def train_command(args: argparse.Namespace) -> None:
 
     logger.info("Инициализация тренера...")
     trainer = LightGBMTrainer(
-        test_size=args.test_size,
-        random_state=args.random_state,
-        n_trials=args.n_trials,
-        cv_folds=args.cv_folds,
-        include_weak=args.include_weak,
-        use_optuna=args.use_optuna,
+        test_size=args.test_size or TEST_SIZE,
+        random_state=args.random_state or RANDOM_STATE,
+        n_trials=args.n_trials or N_TRIALS,
+        cv_folds=args.cv_folds or CV_FOLDS,
+        include_weak=args.include_weak if args.include_weak is not None else INCLUDE_WEAK,
+        use_optuna=args.use_optuna if args.use_optuna is not None else USE_OPTUNA,
     )
 
     logger.info("Запуск обучения...")
     pipeline, test_metrics = trainer.train(
         df=df,
-        target_col=args.target,
-        save_path=args.model_dir,
+        target_col=args.target or TARGET_COLUMN,
+        save_path=args.model_dir or MODEL_DIR,
     )
 
     logger.info("Обучение завершено. Метрики на тесте:")
@@ -67,8 +73,9 @@ def predict_command(args: argparse.Namespace) -> None:
     logger.info("Загрузка данных для предсказания...")
     df = load_data(args)
 
-    logger.info(f"Загрузка модели из {args.model_dir}...")
-    predictor = LightGBMPredictor(args.model_dir)
+    model_dir = args.model_dir or MODEL_DIR
+    logger.info(f"Загрузка модели из {model_dir}...")
+    predictor = LightGBMPredictor(model_dir)
 
     logger.info("Выполнение предсказаний...")
     if args.probabilities:
@@ -87,13 +94,18 @@ def predict_command(args: argparse.Namespace) -> None:
 
 def api_command(args: argparse.Namespace) -> None:
     """Запускает FastAPI сервер."""
-    logger.info(f"Запуск API сервера на {args.host}:{args.port}")
+    host = args.host or API_HOST
+    port = args.port or API_PORT
+    reload = args.reload if args.reload is not None else API_RELOAD
+    log_level = args.log_level or API_LOG_LEVEL
+    
+    logger.info(f"Запуск API сервера на {host}:{port}")
     uvicorn.run(
         "src.api.main:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level=args.log_level,
+        host=host,
+        port=port,
+        reload=reload,
+        log_level=log_level,
     )
 
 
@@ -107,10 +119,11 @@ def main() -> None:
 
     data_parent = argparse.ArgumentParser(add_help=False)
     data_parent.add_argument(
-        "data", type=str, help="Путь к CSV-файлу с данными"
+        "data", type=str, nargs='?', default=DATA_PATH,
+        help="Путь к CSV-файлу с данными"
     )
     data_parent.add_argument(
-        "--kaggle", type=str, default=None,
+        "--kaggle", type=str, default=KAGGLE_DATASET,
         help="Имя датасета на Kaggle (owner/dataset) для загрузки, если файла нет"
     )
     data_parent.add_argument(
@@ -122,34 +135,36 @@ def main() -> None:
         "train", parents=[data_parent], help="Обучение модели"
     )
     train_parser.add_argument(
-        "--target", type=str, default="loan_status",
-        help="Имя целевой колонки (по умолчанию: loan_status)"
+        "--target", type=str, default=TARGET_COLUMN,
+        help=f"Имя целевой колонки (по умолчанию: {TARGET_COLUMN})"
     )
     train_parser.add_argument(
-        "--model-dir", type=str, default="models",
-        help="Директория для сохранения модели (по умолчанию: models)"
+        "--model-dir", type=str, default=MODEL_DIR,
+        help=f"Директория для сохранения модели (по умолчанию: {MODEL_DIR})"
     )
     train_parser.add_argument(
-        "--test-size", type=float, default=0.2, help="Доля тестовой выборки"
+        "--test-size", type=float, default=TEST_SIZE,
+        help=f"Доля тестовой выборки (по умолчанию: {TEST_SIZE})"
     )
     train_parser.add_argument(
-        "--random-state", type=int, default=42, help="Seed для воспроизводимости"
+        "--random-state", type=int, default=RANDOM_STATE,
+        help=f"Seed для воспроизводимости (по умолчанию: {RANDOM_STATE})"
     )
     train_parser.add_argument(
-        "--include-weak", action="store_true",
-        help="Включать слабые признаки (по умолчанию выключено)"
+        "--include-weak", action="store_true", default=INCLUDE_WEAK,
+        help=f"Включать слабые признаки (по умолчанию: {INCLUDE_WEAK})"
     )
     train_parser.add_argument(
-        "--use-optuna", action="store_true",
-        help="Использовать Optuna для подбора гиперпараметров"
+        "--use-optuna", action="store_true", default=USE_OPTUNA,
+        help=f"Использовать Optuna для подбора гиперпараметров (по умолчанию: {USE_OPTUNA})"
     )
     train_parser.add_argument(
-        "--n-trials", type=int, default=50,
-        help="Количество итераций Optuna (по умолчанию: 50)"
+        "--n-trials", type=int, default=N_TRIALS,
+        help=f"Количество итераций Optuna (по умолчанию: {N_TRIALS})"
     )
     train_parser.add_argument(
-        "--cv-folds", type=int, default=5,
-        help="Число фолдов для кросс-валидации (по умолчанию: 5)"
+        "--cv-folds", type=int, default=CV_FOLDS,
+        help=f"Число фолдов для кросс-валидации (по умолчанию: {CV_FOLDS})"
     )
     train_parser.set_defaults(func=train_command)
 
@@ -157,8 +172,8 @@ def main() -> None:
         "predict", parents=[data_parent], help="Предсказание на новых данных"
     )
     predict_parser.add_argument(
-        "--model-dir", type=str, default="models",
-        help="Директория с сохранённой моделью (по умолчанию: models)"
+        "--model-dir", type=str, default=MODEL_DIR,
+        help=f"Директория с сохранённой моделью (по умолчанию: {MODEL_DIR})"
     )
     predict_parser.add_argument(
         "--output", type=str, default=None,
@@ -179,21 +194,21 @@ def main() -> None:
         help="Запуск FastAPI сервера"
     )
     api_parser.add_argument(
-        "--host", type=str, default="127.0.0.1",
-        help="Хост для сервера (по умолчанию: 127.0.0.1)"
+        "--host", type=str, default=API_HOST,
+        help=f"Хост для сервера (по умолчанию: {API_HOST})"
     )
     api_parser.add_argument(
-        "--port", type=int, default=8000,
-        help="Порт для сервера (по умолчанию: 8000)"
+        "--port", type=int, default=API_PORT,
+        help=f"Порт для сервера (по умолчанию: {API_PORT})"
     )
     api_parser.add_argument(
-        "--reload", action="store_true",
-        help="Автоматическая перезагрузка при изменениях"
+        "--reload", action="store_true", default=API_RELOAD,
+        help=f"Автоматическая перезагрузка при изменениях (по умолчанию: {API_RELOAD})"
     )
     api_parser.add_argument(
-        "--log-level", type=str, default="info",
+        "--log-level", type=str, default=API_LOG_LEVEL,
         choices=["critical", "error", "warning", "info", "debug"],
-        help="Уровень логирования (по умолчанию: info)"
+        help=f"Уровень логирования (по умолчанию: {API_LOG_LEVEL})"
     )
     api_parser.set_defaults(func=api_command)
 
